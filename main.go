@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -14,7 +15,7 @@ import (
 const TOKEN = `Bearer xoxb-XXXXXXXXXXXXXXXXX`
 
 func main() {
-	log.SetFormatter(&log.JSONFormatter{TimestampFormat: "2006-01-02T15:04:05.999-0700"})
+	log.SetFormatter(&log.JSONFormatter{TimestampFormat: "2006-01-02T15:04:05.999-0700", PrettyPrint: true})
 	log.SetLevel(log.DebugLevel)
 	log.Info("Starting...")
 
@@ -58,7 +59,6 @@ func slackEventsHanlder(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-
 }
 
 func respondToVerification(w http.ResponseWriter, msg SlackEvent) {
@@ -89,8 +89,67 @@ func handleEventCallback(event json.RawMessage) {
 		return
 	}
 
+	s, ok := inmemoryStore[msg.User]
+	if !ok && msg.Text != "start" {
+		post(msg.Channel, "Type `start` when you're ready")
+		return
+	}
+
+	if msg.Text == "start" {
+		inmemoryStore[msg.User] = &summary{}
+		post(msg.Channel, "1. What did you accomplish yesterday?")
+		return
+	}
+
+	switch s.Progress {
+	case Started:
+		s.Yesterday = msg.Text
+		s.Progress = YesterdayDone
+		post(msg.Channel, "2. What are you working on today?")
+		return
+	case YesterdayDone:
+		s.Today = msg.Text
+		s.Progress = TodayDone
+		post(msg.Channel, "3. Is anything standing in your way?")
+		return
+	case TodayDone:
+		s.Misc = msg.Text
+		s.Progress = Finished
+
+		var echo strings.Builder
+		echo.WriteString("1. What did you accomplish yesterday?\n")
+		echo.WriteString(s.Yesterday)
+		echo.WriteString("\n2. What are you working on today?\n")
+		echo.WriteString(s.Today)
+		echo.WriteString("\n3. Is anything standing in your way?\n")
+		echo.WriteString(s.Misc)
+		echo.WriteString("\nIf you want to start again, just tupe `start`")
+		post(msg.Channel, echo.String())
+
+		delete(inmemoryStore, msg.User)
+		return
+	}
+
 	post(msg.Channel, "I'm a certified Scrum Master")
 }
+
+var inmemoryStore = make(map[string]*summary, 10)
+
+type summary struct {
+	Yesterday string
+	Today     string
+	Misc      string
+	Progress  progress
+}
+
+type progress int
+
+const (
+	Started       progress = 0
+	YesterdayDone progress = 1
+	TodayDone     progress = 2
+	Finished      progress = 3
+)
 
 func post(channel string, text string) {
 	log.WithFields(log.Fields{"text": text}).Debug("sending a message")
@@ -102,7 +161,6 @@ func post(channel string, text string) {
 	body, err := json.Marshal(map[string]string{
 		"channel": channel,
 		"text":    text,
-		// "token":   TOKEN,
 	})
 	if err != nil {
 		log.WithError(err).Error("failed to marshal post body")
