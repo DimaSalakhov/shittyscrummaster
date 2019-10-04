@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"strings"
@@ -13,6 +14,8 @@ import (
 )
 
 const TOKEN = `Bearer xoxb-XXXXXXXXXXXXXXXXX`
+
+var reportChannel string
 
 func main() {
 	log.SetFormatter(&log.JSONFormatter{TimestampFormat: "2006-01-02T15:04:05.999-0700", PrettyPrint: true})
@@ -25,6 +28,7 @@ func main() {
 func router() http.Handler {
 	router := mux.NewRouter()
 	router.HandleFunc("/slack-events", slackEventsHanlder)
+	router.HandleFunc("/slash-config", slashConfigHanlder)
 	return router
 }
 
@@ -117,14 +121,15 @@ func handleEventCallback(event json.RawMessage) {
 		s.Progress = Finished
 
 		var echo strings.Builder
+		echo.WriteString(fmt.Sprintf("<@%s>\n", msg.User))
 		echo.WriteString("1. What did you accomplish yesterday?\n")
 		echo.WriteString(s.Yesterday)
 		echo.WriteString("\n2. What are you working on today?\n")
 		echo.WriteString(s.Today)
 		echo.WriteString("\n3. Is anything standing in your way?\n")
 		echo.WriteString(s.Misc)
-		echo.WriteString("\nIf you want to start again, just tupe `start`")
-		post(msg.Channel, echo.String())
+		post(reportChannel, echo.String())
+		post(msg.Channel, "Well done! If you want to start again, just type `start`")
 
 		delete(inmemoryStore, msg.User)
 		return
@@ -182,4 +187,30 @@ func post(channel string, text string) {
 	responseBody, _ := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
 	log.WithField("response", string(responseBody)).Debug("response to a post message")
+}
+
+func slashConfigHanlder(w http.ResponseWriter, r *http.Request) {
+	log.WithFields(log.Fields{"url": r.URL.RequestURI()}).Debug("received slash command")
+
+	w.WriteHeader(http.StatusOK)
+
+	err := r.ParseForm()
+	if err != nil {
+		log.WithError(err).Errorf("failed to parse slash message @q", r.URL.RequestURI())
+	}
+
+	channel := r.FormValue("channel_id")
+	text := r.FormValue("text")
+
+	const reportHereCommand = "report here"
+
+	if text != "report here" {
+		w.Write([]byte(fmt.Sprintf("Sorry, I don't know this command. Please use `@s` command", reportHereCommand)))
+		return
+	}
+
+	reportChannel = channel
+
+	body := []byte("Thanks! I'll ask to report to that channel")
+	w.Write(body)
 }
